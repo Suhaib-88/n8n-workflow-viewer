@@ -78,11 +78,13 @@ export default function Home() {
         throw new Error("No template filename found for this workflow")
       }
 
-      const blobUrl = `${BLOB_BASE_URL}/${workflow.filename}`
-      console.log("Fetching workflow from:", blobUrl)
+      console.log("Attempting to fetch workflow:", workflow.filename)
 
+      // Try using our proxy endpoint first to avoid CORS issues
+      const proxyUrl = `/api/fetch-workflow?filename=${encodeURIComponent(workflow.filename)}`
+      console.log("Using proxy URL:", proxyUrl)
       // Add fetch options to handle CORS and other issues
-      const response = await fetch(blobUrl, {
+      const response = await fetch(proxyUrl, {
         method: "GET",
         mode: "cors",
         headers: {
@@ -93,9 +95,8 @@ export default function Home() {
         signal: AbortSignal.timeout(30000), // 30 second timeout
       })
 
-      console.log("Response status:", response.status)
-      console.log("Response headers:", Object.fromEntries(response.headers.entries()))
-
+      console.log("Proxy response status:", response.status)
+      console.log("Proxy response headers:", Object.fromEntries(response.headers.entries()))
       if (!response.ok) {
         if (response.status === 404) {
           throw new Error(`Workflow template not found: ${workflow.filename}`)
@@ -171,6 +172,54 @@ export default function Home() {
     } catch (error) {
       console.error("Blob access test failed:", error)
     }
+  }
+// Fallback direct blob access function
+  const fetchWorkflowDataDirect = async (workflow: Workflow) => {
+    const blobUrl = `${BLOB_BASE_URL}/${workflow.filename}`
+    console.log("Direct fetching workflow from:", blobUrl)
+
+    const response = await fetch(blobUrl, {
+      method: "GET",
+      mode: "cors",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      signal: AbortSignal.timeout(30000), // 30 second timeout
+    })
+
+    console.log("Direct response status:", response.status)
+
+    if (!response.ok) {
+      if (response.status === 404) {
+        throw new Error(
+          `Workflow template not found: ${workflow.filename}. The file may have been moved or deleted from blob storage.`,
+        )
+      } else if (response.status === 403) {
+        throw new Error("Access denied to workflow template. Please check permissions.")
+      } else if (response.status >= 500) {
+        throw new Error("Server error while fetching workflow template. Please try again later.")
+      } else {
+        throw new Error(`Failed to fetch workflow: ${response.status} ${response.statusText}`)
+      }
+    }
+
+    const textContent = await response.text()
+    if (!textContent.trim()) {
+      throw new Error("Empty response from server")
+    }
+
+    const workflowJson = JSON.parse(textContent)
+
+    if (!workflowJson || typeof workflowJson !== "object") {
+      throw new Error("Invalid workflow data: not an object")
+    }
+
+    if (!workflowJson.nodes || !Array.isArray(workflowJson.nodes)) {
+      throw new Error("Invalid workflow structure: missing or invalid nodes array")
+    }
+
+    return workflowJson
   }
 
   // Filter workflows based on current filters
@@ -290,19 +339,27 @@ export default function Home() {
           ) : workflowError ? (
             <Alert variant="destructive">
               <AlertDescription>
-                <div className="space-y-2">
-                  <p>{workflowError}</p>
-                  <div className="flex gap-2">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="bg-transparent"
-                      onClick={() => fetchWorkflowData(selectedWorkflow)}
-                    >
-                      Retry
-                    </Button>
-                    <Button variant="outline" size="sm" className="bg-transparent" onClick={testBlobAccess}>
-                      Test Connection
+                <div className="space-y-3">
+                    <p className="font-medium">Failed to load workflow</p>
+                    <p className="text-sm">{workflowError}</p>
+
+                    <div className="bg-red-50 border border-red-200 rounded p-3 text-sm">
+                      <p className="font-medium text-red-800 mb-2">Debug Information:</p>
+                      <ul className="text-red-700 space-y-1">
+                        <li>• Workflow: {selectedWorkflow.name}</li>
+                        <li>• Filename: {selectedWorkflow.filename || "No filename"}</li>
+                        <li>
+                          • Expected URL: {BLOB_BASE_URL}/{selectedWorkflow.filename}
+                        </li>
+                      </ul>
+                    </div>
+
+                    <div className="flex gap-2">
+                      <Button variant="outline" size="sm" onClick={() => fetchWorkflowData(selectedWorkflow)}>
+                        Retry Loading
+                      </Button>
+                      <Button variant="outline" size="sm" onClick={() => window.open(`/api/debug-workflows`, "_blank")}>
+                        View Debug Info
                     </Button>
                   </div>
                 </div>
